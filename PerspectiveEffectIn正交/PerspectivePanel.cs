@@ -1,84 +1,93 @@
 // PerspectivePanel.cs
 using UnityEngine;
 
+[ExecuteAlways]
 public class PerspectivePanel : MonoBehaviour
 {
     [Header("透视参数")]
-    public float rotationY = 15f;       // 绕Y轴旋转角度
-    public float focalLength = 800f;    // 焦距，越小透视越强
+    public float rotationY = 15f;
+    public float fov = 60f;
 
-    // 变形后的四角坐标（本地空间）
-    // 顺序：左下 左上 右上 右下
     public Vector3[] WarpedCorners { get; private set; } = new Vector3[4];
-
-    // 父物体的原始尺寸（用于子物体算 u/v）
     public Rect PanelRect { get; private set; }
 
     private RectTransform rectTransform;
+    private Canvas canvas;
 
     void Awake()
     {
         rectTransform = GetComponent<RectTransform>();
+        canvas = GetComponentInParent<Canvas>();
         Calculate();
     }
 
-    // Panel 尺寸变化时重算
-    void OnRectTransformDimensionsChange()
-    {
-        Calculate();
-    }
+    void OnRectTransformDimensionsChange() => Calculate();
 
-    // 编辑器调参时重算
     void OnValidate()
     {
-        if (rectTransform == null)
-            rectTransform = GetComponent<RectTransform>();
+        if (rectTransform == null) rectTransform = GetComponent<RectTransform>();
+        if (canvas == null) canvas = GetComponentInParent<Canvas>();
         Calculate();
-
-        // 通知所有子物体刷新
-        foreach (var tmp in GetComponentsInChildren<PerspectiveTMP>())
-            tmp.Refresh();
-        foreach (var img in GetComponentsInChildren<PerspectiveImage>())
-            img.Refresh();
+        foreach (var tmp in GetComponentsInChildren<PerspectiveTMP>()) tmp.Refresh();
+        foreach (var img in GetComponentsInChildren<PerspectiveImage>()) img.Refresh();
     }
 
     public void Calculate()
     {
+        if (rectTransform == null) return;
+
         Rect rect = rectTransform.rect;
         PanelRect = rect;
 
-        float W = rect.width;
-        float H = rect.height;
-        float cx = rect.center.x;  // pivot.x=0.5 时是 0
-        float cy = rect.center.y;  // pivot.y=0 时是 H/2  ← 关键
+        // Canvas 高度换算焦距（保证和本地坐标单位一致）
+        float canvasHeight = canvas != null
+            ? canvas.GetComponent<RectTransform>().rect.height
+            : Screen.height;
+        float f = (canvasHeight * 0.5f) / Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
 
-        float θ = rotationY * Mathf.Deg2Rad;
-        float f = focalLength;
+        // Panel pivot 相对于 Canvas 中心的偏移（世界单位）
+        float ox = 0, oy = 0;
+        if (canvas != null)
+        {
+            Vector3 canvasCenter = canvas.transform.position;
+            ox = transform.position.x - canvasCenter.x;
+            oy = transform.position.y - canvasCenter.y;
+        }
 
-        float zLeft = (W * 0.5f) * Mathf.Sin(θ);
-        float zRight = -(W * 0.5f) * Mathf.Sin(θ);
+        // 以 rect 视觉中心为旋转基准
+        Vector3 center = new Vector3(rect.center.x, rect.center.y, 0);
+        Vector3[] offsets = new Vector3[]
+        {
+            new Vector3(rect.xMin, rect.yMin, 0) - center, // 左下
+            new Vector3(rect.xMin, rect.yMax, 0) - center, // 左上
+            new Vector3(rect.xMax, rect.yMax, 0) - center, // 右上
+            new Vector3(rect.xMax, rect.yMin, 0) - center, // 右下
+        };
 
-        float scaleL = f / (f + zLeft);
-        float scaleR = f / (f + zRight);
+        Quaternion rot = Quaternion.AngleAxis(rotationY, Vector3.up);
 
-        float xLeft = cx - (W * 0.5f) * Mathf.Cos(θ) * scaleL;
-        float xRight = cx + (W * 0.5f) * Mathf.Cos(θ) * scaleR;
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 ro = rot * offsets[i];
+            float denom = f + ro.z;
 
-        WarpedCorners[0] = new Vector3(xLeft, cy - H * 0.5f * scaleL);  // 左下
-        WarpedCorners[1] = new Vector3(xLeft, cy + H * 0.5f * scaleL);  // 左上
-        WarpedCorners[2] = new Vector3(xRight, cy + H * 0.5f * scaleR);  // 右上
-        WarpedCorners[3] = new Vector3(xRight, cy - H * 0.5f * scaleR);  // 右下
+            // 完整透视投影公式，包含屏幕偏移修正项 (ox * ro.z)
+            WarpedCorners[i] = new Vector3(
+                (rect.center.x * f + ro.x * f - ox * ro.z) / denom,
+                (rect.center.y * f + ro.y * f - oy * ro.z) / denom,
+                0
+            );
+        }
     }
 
-    // 编辑器下可视化四角
     void OnDrawGizmos()
     {
         if (WarpedCorners == null) return;
         Gizmos.color = Color.green;
         Vector3 pos = transform.position;
-        Gizmos.DrawLine(pos + WarpedCorners[0], pos + WarpedCorners[1]); // 左边
-        Gizmos.DrawLine(pos + WarpedCorners[1], pos + WarpedCorners[2]); // 上边
-        Gizmos.DrawLine(pos + WarpedCorners[2], pos + WarpedCorners[3]); // 右边
-        Gizmos.DrawLine(pos + WarpedCorners[3], pos + WarpedCorners[0]); // 下边
+        Gizmos.DrawLine(pos + WarpedCorners[0], pos + WarpedCorners[1]);
+        Gizmos.DrawLine(pos + WarpedCorners[1], pos + WarpedCorners[2]);
+        Gizmos.DrawLine(pos + WarpedCorners[2], pos + WarpedCorners[3]);
+        Gizmos.DrawLine(pos + WarpedCorners[3], pos + WarpedCorners[0]);
     }
 }
